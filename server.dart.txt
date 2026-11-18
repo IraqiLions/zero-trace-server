@@ -1,0 +1,87 @@
+import 'dart:convert';
+import 'dart:io';
+
+// تخزين الاتصالات النشطة في الذاكرة اللحظية (RAM) فقط بدون أي قواعد بيانات
+final Map<String, WebSocket> activeClients = {};
+
+void main() async {
+  // السحابة تحدد رقم المنفذ تلقائياً عبر متغير البيئة PORT
+  final portEnv = Platform.environment['PORT'];
+  final int port = portEnv != null ? int.parse(portEnv) : 8080;
+
+  final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
+  print('خادم التوصيل السحابي يعمل الآن على المنفذ: $port');
+
+  await for (HttpRequest request in server) {
+    // 1. ترقية الطلبات القادمة كاتصال WebSocket
+    if (WebSocketTransformer.isUpgradeRequest(request)) {
+      final socket = await WebSocketTransformer.upgrade(request);
+      _handleWebSocket(socket);
+    } else {
+      // 2. الرد على فحوصات السحابة (Health Check) ليبقى السيرفر نشطاً
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..headers.contentType = ContentType.text
+        ..write('Zero-Trace Relay Server is Online and Ready!')
+        ..close();
+    }
+  }
+}
+
+void _handleWebSocket(WebSocket socket) {
+  String? currentUser;
+
+  socket.listen(
+    (data) {
+      try {
+        final msg = jsonDecode(data as String);
+        final type = msg['type'];
+
+        // تسجيل المعرف
+        if (type == 'register') {
+          currentUser = (msg['username'] as String).trim().toLowerCase();
+          activeClients[currentUser!] = socket;
+          print('[+] متصل جديد: @$currentUser (الإجمالي: ${activeClients.length})');
+        }
+        // فحص تواجد الطرف الآخر
+        else if (type == 'check_presence') {
+          final target = (msg['targetUser'] as String).trim().toLowerCase();
+          final isOnline = activeClients.containsKey(target);
+          socket.add(jsonEncode({
+            'type': 'presence_result',
+            'targetUser': target,
+            'isOnline': isOnline,
+          }));
+        }
+        // تمرير الرسائل والصور فوراً دون تخزين
+        else if (type == 'relay_message') {
+          final target = (msg['targetUser'] as String).trim().toLowerCase();
+          final targetSocket = activeClients[target];
+
+          if (targetSocket != null) {
+            targetSocket.add(jsonEncode({
+              'type': 'new_message',
+              'sender': currentUser,
+              'content': msg['content'],
+              'isImage': msg['isImage'] ?? false,
+              'burnSeconds': msg['burnSeconds'] ?? 6,
+            }));
+          }
+        }
+      } catch (e) {
+        print('خطأ في معالجة الحزمة: $e');
+      }
+    },
+    onDone: () {
+      if (currentUser != null && activeClients[currentUser] == socket) {
+        activeClients.remove(currentUser);
+        print('[-] غادر الجلسة: @$currentUser');
+      }
+    },
+    onError: (_) {
+      if (currentUser != null && activeClients[currentUser] == socket) {
+        activeClients.remove(currentUser);
+      }
+    },
+  );
+}
