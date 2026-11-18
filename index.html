@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zero-Trace Chat - Web Client</title>
+  <style>
+    body { background: #121212; color: #fff; font-family: sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+    .box { background: #1e1e1e; padding: 24px; border-radius: 14px; width: 90%; max-width: 360px; border: 1px solid #333; }
+    input, button { width: 100%; padding: 12px; margin: 8px 0; border-radius: 8px; border: none; box-sizing: border-box; font-size: 14px; }
+    input { background: #2a2a2a; color: #fff; outline: none; }
+    button { background: #00E676; color: #000; font-weight: bold; cursor: pointer; }
+    #chatRoom { display: none; height: 500px; flex-direction: column; }
+    #msgList { flex: 1; overflow-y: auto; padding: 10px; background: #151515; border-radius: 8px; margin-bottom: 10px; }
+    .msg { background: #263238; padding: 10px; margin: 8px 0; border-radius: 10px; border-right: 3px solid #00E676; }
+    .fire { color: #ff9100; font-size: 11px; float: left; font-weight: bold; }
+    .status-badge { font-size: 12px; padding: 6px; border-radius: 6px; display: block; text-align: center; margin-bottom: 10px; }
+    .online { background: rgba(0, 230, 118, 0.15); color: #00E676; }
+    .reconnecting { background: rgba(255, 152, 0, 0.2); color: #ff9800; }
+  </style>
+</head>
+<body>
+
+<div class="box" id="loginBox">
+  <h3 style="color:#00E676; text-align:center;">Zero-Trace Chat</h3>
+  <div id="connStatus" class="status-badge reconnecting">جاهز للاتصال بالسحابة</div>
+  <input type="text" id="username" placeholder="معرفك (مثال: ahmed)" value="ahmed">
+  <button onclick="startConnection()">دخول بدون أثر</button>
+</div>
+
+<div class="box" id="chatRoom">
+  <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #333; padding-bottom:8px; margin-bottom:8px;">
+    <span id="chatTitle" style="color:#00E676; font-size:13px; font-weight:bold;">متصل</span>
+    <button onclick="location.reload()" style="width:auto; padding:4px 8px; background:#d32f2f; color:#fff; font-size:11px; margin:0;">خروج</button>
+  </div>
+  <div id="liveStatus" style="font-size:11px; text-align:center; margin-bottom:6px; color:#00E676;">● الجلسة متصلة</div>
+  <div id="msgList"></div>
+  <div style="display:flex; gap:6px;">
+    <input type="text" id="txtInput" placeholder="رسالة مؤقتة..." onkeydown="if(event.key==='Enter') sendText()">
+    <button onclick="sendText()" style="width:70px; margin:8px 0;">إرسال</button>
+  </div>
+</div>
+
+<script>
+  const SERVER_URL = 'wss://zero-trace-server.onrender.com';
+
+  let ws, myUser = '', targetUser = 'haider';
+  let reconnectTimer = null;
+
+  function startConnection() {
+    myUser = document.getElementById('username').value.trim().toLowerCase();
+    if (!myUser) return;
+    initSocket();
+  }
+
+  function initSocket() {
+    if (ws) {
+      ws.close();
+    }
+
+    updateStatus('جاري الاتصال وإيقاظ السيرفر...', 'reconnecting');
+
+    ws = new WebSocket(SERVER_URL);
+
+    ws.onopen = () => {
+      clearInterval(reconnectTimer);
+      reconnectTimer = null;
+      updateStatus('متصل كـ @' + myUser, 'online');
+
+      ws.send(JSON.stringify({ type: 'register', username: myUser }));
+
+      document.getElementById('loginBox').style.display = 'none';
+      document.getElementById('chatRoom').style.display = 'flex';
+      document.getElementById('chatTitle').innerText = '@' + myUser + ' (مباشر)';
+      document.getElementById('liveStatus').innerText = '● الخط نشط';
+      document.getElementById('liveStatus').style.color = '#00E676';
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'new_message') {
+          targetUser = data.sender;
+          displayEphemeral(data);
+        }
+      } catch (e) {}
+    };
+
+    ws.onclose = () => {
+      handleDrop();
+    };
+
+    ws.onerror = () => {
+      handleDrop();
+    };
+  }
+
+  function handleDrop() {
+    updateStatus('انقطع الخط... جاري إعادة الاتصال تلقائياً', 'reconnecting');
+    const live = document.getElementById('liveStatus');
+    if (live) {
+      live.innerText = '○ انقطع الخط... جاري استعادة الاتصال';
+      live.style.color = '#ff9800';
+    }
+
+    if (!reconnectTimer && myUser) {
+      reconnectTimer = setInterval(() => {
+        initSocket();
+      }, 3000);
+    }
+  }
+
+  function updateStatus(text, cls) {
+    const el = document.getElementById('connStatus');
+    if (el) {
+      el.className = 'status-badge ' + cls;
+      el.innerText = text;
+    }
+  }
+
+  function displayEphemeral(data) {
+    const list = document.getElementById('msgList');
+    const div = document.createElement('div');
+    div.className = 'msg';
+    let secs = data.burnSeconds || 6;
+
+    let contentHtml = data.isImage
+      ? `<img src="data:image/jpeg;base64,${data.content}" style="max-width:100%; border-radius:8px; display:block;"/>`
+      : `<div>${data.content}</div>`;
+
+    div.innerHTML = `${contentHtml}<span class="fire">🔥 ${secs}s</span><div style="clear:both;"></div>`;
+    list.appendChild(div);
+    list.scrollTop = list.scrollHeight;
+
+    const timerSpan = div.querySelector('.fire');
+    const interval = setInterval(() => {
+      secs--;
+      if (timerSpan) timerSpan.innerText = `🔥 ${secs}s`;
+      if (secs <= 0) {
+        clearInterval(interval);
+        div.remove();
+      }
+    }, 1000);
+  }
+
+  function sendText() {
+    const input = document.getElementById('txtInput');
+    const text = input.value.trim();
+    if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+    ws.send(JSON.stringify({
+      type: 'relay_message',
+      targetUser: targetUser,
+      content: text,
+      isImage: false,
+      burnSeconds: 6
+    }));
+
+    displayEphemeral({ content: text, isImage: false, burnSeconds: 6 });
+    input.value = '';
+  }
+</script>
+</body>
+</html>
