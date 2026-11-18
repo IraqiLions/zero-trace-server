@@ -5,9 +5,9 @@ COPY pubspec.yaml .
 RUN dart pub get
 
 COPY . .
-RUN dart compile exe server.dart -o bin/server
+RUN mkdir -p bin && dart compile exe server.dart -o bin/server
 
-FROM scratch
+FROM debian:bookworm-slim
 COPY --from=build /runtime/ /
 COPY --from=build /app/bin/server /app/bin/
 
